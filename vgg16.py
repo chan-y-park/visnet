@@ -1,3 +1,4 @@
+import numpy as np
 import tensorflow as tf
 import h5py
 
@@ -12,6 +13,11 @@ full_weights_file_path = (
 )
 
 
+class _weights:
+    def __init__(self, nparray):
+        self.value = nparray
+
+
 class VGG16Core:
     def __init__(
         self,
@@ -19,17 +25,21 @@ class VGG16Core:
         input_size=224,
         batch_size=1,
         visualize=True,
+        use_test_filters=False,
+        logdir='log',
     ):
         self.num_in_chs = num_input_channels
         self.input_size = input_size
         self.batch_size = batch_size
         self.visualize = visualize
-        self.weights_f = h5py.File(core_weights_file_path, mode='r')
 
-        self.layers = []
-        self.max_pool_switches = []
-        #self.max_unpoolings = []
-        self.reconstructed_features = {}
+        #self.layers = []
+        self.layers = None
+        #self.max_pool_switches = []
+        self.max_pool_switches = None
+        #self.reconstructed_features = {}
+        #self.recons = []
+        #self.tops = []
         self._configuration = [
             ('block1',
                 (
@@ -71,16 +81,72 @@ class VGG16Core:
             ),
         ]
 
-    def build(self):
+        if use_test_filters:
+            self.weights_f = self.get_test_filters()
+        else:
+            self.weights_f = h5py.File(core_weights_file_path, mode='r')
+
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self._build()
+            self._build_network()
+
+    def get_test_filters(self, a_filter='one'):
+        """
+        Pack the given test filter into a dict
+        according to the format of the weights hdf5 file
+        to test the backpropagation.
+        """
+        weights = {}
+        for block_name, block_conf in self._configuration:
+            for layer_name, layer_conf in block_conf:
+                if 'conv' in layer_name:
+                    grp_name = block_name + '_' + layer_name
+                    weights[grp_name] = {}
+                    for var_name, var_shape in layer_conf.items():
+                        dset_name = grp_name + '_' + var_name + '_1:0'
+                        if var_name == 'W':
+                            h, w, n_in, n_out = var_shape
+                            if a_filter == 'one':
+                                W = np.ones((h, w), dtype=np.float32)
+                            elif a_filter == 'zero':
+                                W = np.zeros((h, w), dtype=np.float32)
+                            elif a_filter == 'identity':
+                                W = np.array(
+                                    [[0, 0, 0],
+                                     [0, 1, 0],
+                                     [0, 0, 0]],
+                                    dtype=np.float32
+                                )
+                            else:
+                                W = np.array(a_filter, dtype=np.float)
+                            var = _weights(
+                                np.array(
+                                    [[W for _ in range(n_out)]
+                                     for _ in range(n_in)]
+                                ).transpose((2, 3, 0, 1))
+                            )
+                        elif var_name == 'b':
+                            var = _weights(
+                                np.zeros(var_shape, dtype=np.float32)
+                            )
+                        else:
+                            raise RuntimeError
+                        weights[grp_name][dset_name] = var
+        return weights
+
+#    def build(self):
+#        self.graph = tf.Graph()
+#        with self.graph.as_default():
+#            self._build_network()
 
     def get_output_layer(self):
-        return self.layers[-1]
+        #return self.layers[-1]
+        output_block_name, output_block_conf = self._configuration[-1]
+        output_layer_name, output_layer_conf = output_block_conf[-1]
+        return self.layers[output_block_name + '_' + output_layer_name]
 
-    def _build(self):
-        self.input_layer = tf.placeholder(
+    def _build_network(self):
+        input_layer = tf.placeholder(
             tf.float32,
             shape=(
                 self.batch_size,
@@ -90,18 +156,26 @@ class VGG16Core:
             ),
             name='input_layer',
         )
-        self.layers.append(self.input_layer)
+        #self.layers.append(self.input_layer)
+        self.layers = {'input': input_layer}
+        prev_layer = input_layer
+
+        if self.visualize:
+            pool_f = tf.nn.max_pool_with_argmax
+            self.max_pool_switches = {}
+        else:
+            pool_f = tf.nn.max_pool
 
         #weights_f = h5py.File(core_weights_file_path, mode='r')
         weights_f = self.weights_f
         for block_name, block_conf in self._configuration:
             with tf.variable_scope(block_name):
                 for layer_name, layer_conf in block_conf:
+                    grp_name = block_name + '_' + layer_name
                     with tf.variable_scope(layer_name):
-                        prev_layer = self.layers[-1]
+                        #prev_layer = self.layers[-1]
                         if 'conv' in layer_name:
                             conv_vars = {}
-                            grp_name = block_name + '_' + layer_name
                             for var_name, var_shape in layer_conf.items():
                                 dset_name = grp_name + '_' + var_name + '_1:0'
                                 conv_vars[var_name] = tf.get_variable(
@@ -126,11 +200,6 @@ class VGG16Core:
                                 #name=layer_name,
                             )
                         elif 'pool' in layer_name:
-                            if self.visualize:
-                                pool_f = tf.nn.max_pool_with_argmax
-                            else:
-                                pool_f = tf.nn.max_pool
-
                             rv = pool_f(
                                 prev_layer,
                                 ksize=([1] + layer_conf['k'] + [1]),
@@ -141,12 +210,16 @@ class VGG16Core:
 
                             if self.visualize:
                                 new_layer, switches = rv
-                                layer_conf['switches'] = switches 
+                                #layer_conf['switches'] = switches 
+                                #self.max_pool_switches.append(switches)
+                                self.max_pool_switches[grp_name] = switches
 
                             else:
                                 new_layer = rv
 
-                        self.layers.append(new_layer)
+                        #self.layers.append(new_layer)
+                        self.layers[grp_name] = new_layer
+                        prev_layer = new_layer
 
 #            self.reconstructed_features[block_name] = (
 #                self.get_reconstructed_features(
@@ -154,68 +227,85 @@ class VGG16Core:
 #                    new_layer,
 #                )
 #            )
-            if block_name == 'block2':
-                self.reconstructed_features[block_name] = (
-                    self.get_reconstructed_features(
-                        int(block_name[-1]),
-                        new_layer,
-                    )
+
+    def get_output(self, tf_session, input_array):
+        t_output = self.get_output_layer()
+        return tf_session.run(
+            [t_output],
+            feed_dict={self.layers['input']: input_array},
+        )
+
+    def get_reconstructed_top_features(
+        self,
+        tf_session,
+        input_array,
+        block_name,
+        num_top_features=9,
+        reconstruction_method='deconv',
+    ):
+        assert(self.visualize)
+        assert(self.max_pool_switches is not None)
+
+        i_block = int(block_name[-1])
+        subconfig = self._configuration[:i_block]
+        layer_name = 'pool'
+        grp_name = block_name + '_' + layer_name
+        features = self.layers[grp_name]
+#        switches = self.max_pool_switches[grp_name]
+#        b, h, w, c = switches.shape.as_list()
+
+        with self.graph.as_default(): 
+            assert(features.shape.as_list()[0] == 1)
+            norms = tf.norm(features[0], axis=[0, 1])
+            _, tops = tf.nn.top_k(norms, k=num_top_features)
+#            #self.tops.append(tops)
+#            # XXX: Incompatible if the input size of the pooling
+#            # is not a proper multiple (multiple of 32 for VGG16).
+#            recons = [
+#                tf.scatter_nd(
+#                    tf.reshape(switches[:, :, :, tops[i]], [-1, 1]),
+#                    tf.reshape(features[:, :, :, tops[i]], [-1]),
+#                    [b * (2 * h) * (2 * w) * c],
+#                ) for i in range(num_top_features) 
+#            ]
+#            recons = tf.concat(recons, axis=0)
+#            recons = tf.reshape(
+#                recons,
+#                [num_top_features, (2 * h), (2 * w), c],
+#            )
+
+            if reconstruction_method == 'deconv':
+                recons = self._get_deconved_features(
+                    features,
+                    subconfig,
+                    tops,
+                    num_top_features=num_top_features,
                 )
 
-#    def get_reconstructed_features(
-#        self,
-#        i_block,
-#        features,
-#    ):
-#        recons = features
-#        subconfig = self._configuration[:i_block]
-#        weights_f = self.weights_f
-#
-#        for block_name, block_conf in reversed(subconfig):
-#            # TODO: check features sizes.
-#            for layer_name, layer_conf in reversed(block_conf):
-#                if 'pool' in layer_name: 
-#                    switches = layer_conf['switches']
-#                    b, h, w, c = switches.shape.as_list()
-#                    # XXX: Assume b = 1, k = 2, s = 2.
-#                    unpooled_flattened = tf.scatter_nd(
-#                        tf.reshape(switches, [-1, 1]),
-#                        tf.reshape(recons, [-1]),
-#                        [b * (2 * h) * (2 * w) * c],
-#                    )
-#                    recons = tf.reshape(
-#                        unpooled_flattened,
-#                        [b, (2 * h), (2 * w), c],
-#                    )
-#
-#                elif 'conv' in layer_name:
-#                    _, _, n_in_chs, n_out_chs = layer_conf['W']
-#                    with tf.variable_scope(block_name, reuse=True):
-#                        with tf.variable_scope(layer_name, reuse=True):
-#                            W = tf.get_variable('W')
-#                            b = tf.get_variable('b')
-#                    recons = tf.nn.bias_add(recons, -b)
-#                    recons = tf.nn.conv2d_transpose(
-#                        recons,
-#                        W,
-#                        output_shape=recons.shape.as_list()[:-1] + [n_in_chs],
-#                        strides=[1, 1, 1, 1],
-#                        padding='SAME',
-#                    )
-#
-#        return recons
+        fetches ={
+            'top_labels': tops,
+            'reconstructed_features': recons,
+            'activations': features,
+        }
 
-    def get_reconstructed_features(
+        return tf_session.run(
+            fetches,
+            feed_dict={self.layers['input']: input_array},
+        )
+
+    def _get_deconved_features(
         self,
-        i_block,
+        #i_block,
         features,
+        subconfig,
+        tops,
+        num_top_features=9,
     ):
-        #recons = features
-        subconfig = self._configuration[:i_block]
-        weights_f = self.weights_f
+        #subconfig = self._configuration[:i_block]
+        #weights_f = self.weights_f
 
         # XXX: Assume f_b = 1.
-        f_b, f_h, f_w, n_features = features.shape.as_list()
+        #f_b, f_h, f_w, n_features = features.shape.as_list()
         
         recons = None
 
@@ -223,22 +313,29 @@ class VGG16Core:
             # TODO: check features sizes.
             for layer_name, layer_conf in reversed(block_conf):
                 if 'pool' in layer_name: 
-                    switches = layer_conf['switches']
+                    grp_name = block_name + '_' + layer_name
+                    switches = self.max_pool_switches[grp_name]
                     b, h, w, c = switches.shape.as_list()
 
                     if recons is None:
+#                        assert(features.shape.as_list()[0] == 1)
+#                        norms = tf.norm(features[0], axis=[0, 1])
+#                        _, tops = tf.nn.top_k(norms, k=num_top_features)
+#                        self.tops.append(tops)
+                        # XXX: Incompatible if the input size of the pooling
+                        # is not a proper multiple (multiple of 32 for VGG16).
                         recons = [
                             tf.scatter_nd(
-                                tf.reshape(switches[:, :, :, i_f], [-1, 1]),
-                                tf.reshape(features[:, :, :, i_f], [-1]),
+                                tf.reshape(switches[:, :, :, tops[i]], [-1, 1]),
+                                tf.reshape(features[:, :, :, tops[i]], [-1]),
                                 [b * (2 * h) * (2 * w) * c],
-                            ) for i_f in range(n_features)   
+                            ) for i in range(num_top_features) 
                         ]
 
                         recons = tf.concat(recons, axis=0)
                         recons = tf.reshape(
                             recons,
-                            [n_features, (2 * h), (2 * w), c],
+                            [num_top_features, (2 * h), (2 * w), c],
                         )
                     else:
                         # XXX: Assume b = 1, k = 2, s = 2.
@@ -248,7 +345,7 @@ class VGG16Core:
                                 tf.reshape(recons[i_f, :, :, :], [-1]),
                                 [b * (2 * h) * (2 * w) * c],
                             )
-                            for i_f in range(n_features)
+                            for i_f in range(num_top_features)
                         ]
                         unpooled_flattened = tf.concat(
                             unpooled_flattened_tensors,
@@ -256,7 +353,7 @@ class VGG16Core:
                         )
                         recons = tf.reshape(
                             unpooled_flattened,
-                            [n_features, (2 * h), (2 * w), c],
+                            [num_top_features, (2 * h), (2 * w), c],
                         )
 
                 elif 'conv' in layer_name:
@@ -275,6 +372,11 @@ class VGG16Core:
                         strides=[1, 1, 1, 1],
                         padding='SAME',
                     )
+                    #recons = tf.nn.relu(recons)
+
+                # XXX: Rescale the reconstructions to prevent overflow.
+                #recons = recons / tf.reduce_max(recons)
+                #self.recons.append(recons)
 
         return recons
              
@@ -294,15 +396,23 @@ class VGG16(VGG16Core):
             ('predictions', (1000)),
         )
 
+    def get_output_layer(self):
+        output_name, output_conf = self._top_configuration[-1]
+        return self.layers[output_name]
+
     def _build(self):
         super()._build()
+#        prev_block_name, prev_block_conf = self._configuration[-1]
+#        prev_layer_name, prev_layer_conf = prev_block_conf[-1]
+#        prev_layer = self.layers[prev_block_name + '_' + prev_layer_name]
+        prev_layer = super().get_output_layer()
 
         #weights_f = h5py.File(full_weights_file_path, mode='r')
         weights_f = self.weights_f
         with tf.variable_scope('top'):
             for layer_name, layer_conf in self._top_configuration:
                 with tf.variable_scope(layer_name):
-                    prev_layer = self.layers[-1]
+                    #prev_layer = self.layers[-1]
                     if 'flatten' in layer_name:
                         new_layer = tf.reshape(
                             prev_layer,
@@ -344,4 +454,6 @@ class VGG16(VGG16Core):
                             #name = layer_name,
                         )
 
-                    self.layers.append(new_layer)
+                    #self.layers.append(new_layer)
+                    self.layers[layer_name] = new_layer
+                    prev_layer = new_layer

@@ -75,6 +75,9 @@ class InputImage:
                 width = size * ar
                 height = size
                 left_upper = (int((size - width) / 2.0), 0)
+            else:
+                width = height = size
+                left_upper = (0, 0)
             img = self.image.resize((int(width), int(height)))
             background = Image.new('RGB', (size, size), (255, 255, 255))
             background.paste(img, left_upper)
@@ -87,21 +90,24 @@ class InputImage:
 
 
 def run(
-   input_image,
-   model_name='VGG16',
+    input_array=None,
+    input_image=None,
+    model_name='VGG16',
+    test=False,
+    **kwargs
 ):
-    t_input = input_image.to_array().reshape([-1, 224, 224, 3])
+    if input_image is not None:
+        input_array = input_image.to_array().reshape([-1, 224, 224, 3])
     if model_name == 'VGG16':
         #model = VGG16()
-        model = VGG16Core()
-    model.build()
+        model = VGG16Core(test_filters=test, **kwargs)
+    #model.build()
     with model.graph.as_default():
-        #t_output = model.get_output_layer()
+        t_output = model.get_output_layer()
 
         saver = tf.train.Saver(tf.global_variables())
-        #t_summary = tf.summary.merge_all()
+        t_summary = tf.summary.merge_all()
 
-        sess = tf.Session()
 
         summary_writer = tf.summary.FileWriter(
             logdir=(ROOT_DIR + '/log'),
@@ -109,20 +115,36 @@ def run(
         )
 
         init = tf.global_variables_initializer()
+
+        sess = tf.Session()
         sess.run(init)
 
+        fetches = {
+            'reconstructed_features': model.reconstructed_features,
+            'layers': model.layers,
+            'switches': model.max_pool_switches,
+            'tops': model.tops,
+            'output_layer': t_output
+        }
+        #fetches['layers'] = model.layers
+        #fetches['switches'] = model.max_pool_switches
+        #fetches['tops'] = model.tops
+        #fetches['output_layer'] = t_output
+        #fetches['recons'] = model.recons
+
         output = sess.run(
-            #[t_output],
-            #[t_output] + model.max_pool_switches,
-            #[t_output] + model.max_unpoolings,
-            model.reconstructed_features,
+            fetches,
             feed_dict={
-                model.input_layer: t_input,
+                model.input_layer: input_array,
             }
         )
 
-        #summary_str = sess.run(t_summary)
-        #summary_writer.add_summary(summary_str)
+        summary_str = sess.run(t_summary)
+        summary_writer.add_summary(summary_str)
 
-    return model, output
+    return {
+        'model': model,
+        'output': output,
+        'tf_session': sess,
+    }
 
