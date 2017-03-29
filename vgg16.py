@@ -134,11 +134,6 @@ class VGG16Core:
                         weights[grp_name][dset_name] = var
         return weights
 
-#    def build(self):
-#        self.graph = tf.Graph()
-#        with self.graph.as_default():
-#            self._build_network()
-
     def get_output_layer(self):
         #return self.layers[-1]
         output_block_name, output_block_conf = self._configuration[-1]
@@ -156,7 +151,6 @@ class VGG16Core:
             ),
             name='input_layer',
         )
-        #self.layers.append(self.input_layer)
         self.layers = {'input': input_layer}
         prev_layer = input_layer
 
@@ -173,7 +167,6 @@ class VGG16Core:
                 for layer_name, layer_conf in block_conf:
                     grp_name = block_name + '_' + layer_name
                     with tf.variable_scope(layer_name):
-                        #prev_layer = self.layers[-1]
                         if 'conv' in layer_name:
                             conv_vars = {}
                             for var_name, var_shape in layer_conf.items():
@@ -217,16 +210,8 @@ class VGG16Core:
                             else:
                                 new_layer = rv
 
-                        #self.layers.append(new_layer)
                         self.layers[grp_name] = new_layer
                         prev_layer = new_layer
-
-#            self.reconstructed_features[block_name] = (
-#                self.get_reconstructed_features(
-#                    int(block_name[-1]),
-#                    new_layer,
-#                )
-#            )
 
     def get_output(self, tf_session, input_array):
         t_output = self.get_output_layer()
@@ -251,28 +236,11 @@ class VGG16Core:
         layer_name = 'pool'
         grp_name = block_name + '_' + layer_name
         features = self.layers[grp_name]
-#        switches = self.max_pool_switches[grp_name]
-#        b, h, w, c = switches.shape.as_list()
 
         with self.graph.as_default(): 
             assert(features.shape.as_list()[0] == 1)
             norms = tf.norm(features[0], axis=[0, 1])
             _, tops = tf.nn.top_k(norms, k=num_top_features)
-#            #self.tops.append(tops)
-#            # XXX: Incompatible if the input size of the pooling
-#            # is not a proper multiple (multiple of 32 for VGG16).
-#            recons = [
-#                tf.scatter_nd(
-#                    tf.reshape(switches[:, :, :, tops[i]], [-1, 1]),
-#                    tf.reshape(features[:, :, :, tops[i]], [-1]),
-#                    [b * (2 * h) * (2 * w) * c],
-#                ) for i in range(num_top_features) 
-#            ]
-#            recons = tf.concat(recons, axis=0)
-#            recons = tf.reshape(
-#                recons,
-#                [num_top_features, (2 * h), (2 * w), c],
-#            )
 
             if reconstruction_method == 'deconv':
                 recons = self._get_deconved_features(
@@ -295,15 +263,11 @@ class VGG16Core:
 
     def _get_deconved_features(
         self,
-        #i_block,
         features,
         subconfig,
         tops,
         num_top_features=9,
     ):
-        #subconfig = self._configuration[:i_block]
-        #weights_f = self.weights_f
-
         # XXX: Assume f_b = 1.
         #f_b, f_h, f_w, n_features = features.shape.as_list()
         
@@ -318,10 +282,6 @@ class VGG16Core:
                     b, h, w, c = switches.shape.as_list()
 
                     if recons is None:
-#                        assert(features.shape.as_list()[0] == 1)
-#                        norms = tf.norm(features[0], axis=[0, 1])
-#                        _, tops = tf.nn.top_k(norms, k=num_top_features)
-#                        self.tops.append(tops)
                         # XXX: Incompatible if the input size of the pooling
                         # is not a proper multiple (multiple of 32 for VGG16).
                         recons = [
@@ -372,7 +332,6 @@ class VGG16Core:
                         strides=[1, 1, 1, 1],
                         padding='SAME',
                     )
-                    #recons = tf.nn.relu(recons)
 
                 # XXX: Rescale the reconstructions to prevent overflow.
                 #recons = recons / tf.reduce_max(recons)
@@ -402,9 +361,6 @@ class VGG16(VGG16Core):
 
     def _build(self):
         super()._build()
-#        prev_block_name, prev_block_conf = self._configuration[-1]
-#        prev_layer_name, prev_layer_conf = prev_block_conf[-1]
-#        prev_layer = self.layers[prev_block_name + '_' + prev_layer_name]
         prev_layer = super().get_output_layer()
 
         #weights_f = h5py.File(full_weights_file_path, mode='r')
