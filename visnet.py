@@ -19,12 +19,16 @@ class VisNet:
         logdir='log',
         weights_file_path=None,
     ):
+        #XXX The following does not work, implement a similar check.
+        #assert(hasattr(self, _configuration))
         self.num_in_chs = num_input_channels
         self.input_size = input_size
         self.batch_size = batch_size
         self.visualize = visualize
 
         self.layers = None
+        self.forward_layers = None
+        self.backprop_layers = None
         self.max_pool_switches = None
 
         if use_test_filters or (weights_file_path is None):
@@ -35,6 +39,10 @@ class VisNet:
         self.graph = tf.Graph()
         with self.graph.as_default():
             self._build_network()
+
+        self._graph = tf.Graph()
+        with self._graph.as_default():
+            self._build_graph()
 
     def get_activations(self, input_array):
         with self.graph.as_default():
@@ -53,6 +61,117 @@ class VisNet:
             )
             rd['tf_session'] = tf_session
         return rd
+
+    def get_forward_results(self, input_array):
+        with self._graph.as_default():
+            init = tf.global_variables_initializer()
+            tf_session = tf.Session()
+            tf_session.run(init)
+
+            fetches = {}
+            for name, tensor in self.forward_layers.items():
+                fetches[name + '_activations'] = tensor
+            for name, tensor in self.max_pool_switches.items():
+                fetches[name + '_swithces'] = tensor
+            rd = tf_session.run(
+                fetches,
+                feed_dict={self.layers['input']: input_array},
+            )
+            rd['tf_session'] = tf_session
+        return rd
+
+    def get_backprop_result(
+        self,
+        block_name,
+        input_features,
+        max_pool_switches,
+    ):
+        i_block = int(block_name[-1])
+        subconfig = self._configuration[:i_block]
+        layer_name = 'pool'
+        block_layer_name = block_name + '_' + layer_name
+        num_features = len(input_features)
+
+        self.backprop_graph = tf.Graph()
+        with self.backprop_graph.as_default():
+            recons = None
+            for block_name, block_conf in reversed(subconfig):
+                # TODO: check features sizes.
+                for layer_name, layer_conf in reversed(block_conf):
+                    if 'pool' in layer_name: 
+                        block_layer_name = block_name + '_' + layer_name
+                        switches = tf.constant(
+                            max_pool_switches[block_layer_name]
+                        )
+                        b, h, w, c = switches.shape.as_list()
+
+                        if recons is None:
+                            features = [
+                                (i_f, tf.constant(a_feature_array))
+                                for i_f, a_feature_array
+                                in input_features
+                            ]
+                            # XXX: Incompatible if the input size 
+                            # of the pooling is not a proper multiple 
+                            # (multiple of 32 for VGG16).
+                            recons = [
+                                tf.scatter_nd(
+                                    tf.reshape(switches[:, :, :, i_f], [-1, 1]),
+                                    tf.reshape(a_feature[:, :, :], [-1]),
+                                    [b * (2 * h) * (2 * w) * c],
+                                ) for i_f, a_feature in features 
+                            ]
+
+                            recons = tf.concat(recons, axis=0)
+                            recons = tf.reshape(
+                                recons,
+                                [num_features, (2 * h), (2 * w), c],
+                            )
+                        else:
+                            # XXX: Assume b = 1, k = 2, s = 2.
+                            unpooled_flattened_tensors = [
+                                tf.scatter_nd(
+                                    tf.reshape(switches, [-1, 1]),
+                                    tf.reshape(recons[i_f, :, :, :], [-1]),
+                                    [b * (2 * h) * (2 * w) * c],
+                                )
+                                for i_f in range(num_features)
+                            ]
+                            unpooled_flattened = tf.concat(
+                                unpooled_flattened_tensors,
+                                axis=0,
+                            )
+                            recons = tf.reshape(
+                                unpooled_flattened,
+                                [num_features, (2 * h), (2 * w), c],
+                            )
+
+                    elif 'conv' in layer_name:
+                        # XXX: Where to put ReLU?
+                        recons = tf.nn.relu(recons)
+                        _, _, n_in_chs, n_out_chs = layer_conf['W']
+                        with tf.variable_scope(block_name, reuse=True):
+                            with tf.variable_scope(layer_name, reuse=True):
+                                W = tf.get_variable('W')
+                                b = tf.get_variable('b')
+                        recons = tf.nn.bias_add(recons, -b)
+                        recons = tf.nn.conv2d_transpose(
+                            recons,
+                            W,
+                            output_shape=(
+                                recons.shape.as_list()[:-1] + [n_in_chs]
+                            ),
+                            strides=[1, 1, 1, 1],
+                            padding='SAME',
+                        )
+
+            init = tf.global_variables_initializer()
+            tf_session = tf.Session()
+            tf_session.run(init)
+
+            return tf_session.run(
+                [recons],
+            )
 
     def get_visualization(self, block_layer_name, feature_id):
         pass
@@ -223,6 +342,126 @@ class VisNet:
 
                         self.layers[block_layer_name] = new_layer
                         prev_layer = new_layer
+
+    def _build_graph(self):
+        input_layer = tf.placeholder(
+            tf.float32,
+            shape=(
+                self.batch_size,
+                self.input_size,
+                self.input_size,
+                self.num_in_chs
+            ),
+            name='input_layer',
+        )
+        self.layers = {'input': input_layer}
+        prev_layer = input_layer
+
+        if self.visualize:
+            pool_f = tf.nn.max_pool_with_argmax
+            self.max_pool_switches = {}
+        else:
+            pool_f = tf.nn.max_pool
+
+        weights_f = self.weights_f
+        for block_name, block_conf in self._configuration:
+            for layer_name, layer_conf in block_conf:
+                block_layer_name = block_name + '_' + layer_name
+                if 'conv' in layer_name:
+                    conv_vars = {}
+                    for var_name, var_shape in layer_conf.items():
+                        dset_name = (block_layer_name + '_' +
+                                     var_name + '_1:0')
+                        with tf.variable_scope(block_name):
+                            with tf.variable_scope(layer_name):
+                                conv_vars[var_name] = tf.get_variable(
+                                    var_name,
+                                    shape=var_shape,
+                                    initializer=tf.constant_initializer(
+                                        weights_f[block_layer_name][dset_name]
+                                        .value
+                                    )
+                                )
+                    tensor = tf.nn.conv2d(
+                        prev_layer,
+                        conv_vars['W'],
+                        strides=[1, 1, 1, 1],
+                        padding='SAME',
+                    )
+                    tensor = tf.nn.bias_add(
+                        tensor,
+                        conv_vars['b'],
+                    )
+                    new_layer = tf.nn.relu(
+                        tensor,
+                        #name=layer_name,
+                    )
+                elif 'pool' in layer_name:
+                    rv = pool_f(
+                        prev_layer,
+                        ksize=([1] + layer_conf['k'] + [1]),
+                        strides=([1] + layer_conf['s'] + [1]),
+                        padding='SAME',
+                        #name=layer_name,
+                    )
+
+                    if self.visualize:
+                        new_layer, switches = rv
+                        self.max_pool_switches[
+                            block_layer_name
+                        ] = switches
+
+                    else:
+                        new_layer = rv
+
+                elif 'flatten' in layer_name:
+                    new_layer = tf.reshape(
+                        prev_layer,
+                        [self.batch_size, -1],
+                    )
+
+                elif 'fc' in layer_name or 'predictions' in layer_name:
+                    if 'fc' in layer_name:
+                        f_layer = tf.nn.relu    
+                    elif 'predictions' in layer_name:
+                        f_layer = tf.nn.softmax
+
+                    input_dim = prev_layer.shape[-1].value
+                    output_dim = layer_conf
+                    layer_vars = {}
+                    for var_name, var_shape in (
+                        ('W', (input_dim, output_dim)),
+                        ('b', (output_dim)),
+                    ):
+                        dset_name = (layer_name + '_' +
+                                     var_name + '_1:0')
+                        with tf.variable_scope(block_name):
+                            with tf.variable_scope(layer_name):
+                                layer_vars[var_name] = tf.get_variable(
+                                    var_name,
+                                    shape=var_shape,
+                                    initializer=tf.constant_initializer(
+                                        weights_f[layer_name][dset_name].value
+                                    )
+                                )
+                    activation = tf.add(
+                        tf.matmul(prev_layer, layer_vars['W']),
+                        layer_vars['b'],
+                        #name=layer_name + '_activation',
+                        name='activation',
+                    )
+                    new_layer = f_layer(
+                        activation,
+                        #name = layer_name,
+                    )
+                
+                else:
+                    raise NotImplementedError
+
+                # End of building a layer.
+
+                self.layers[block_layer_name] = new_layer
+                prev_layer = new_layer
 
     def get_output(self, tf_session, input_array):
         t_output = self._get_output_layer()
