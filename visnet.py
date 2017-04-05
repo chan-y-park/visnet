@@ -27,7 +27,6 @@ class VisNet:
         self.visualize = visualize
         self.logdir = logdir
 
-        #self.layers = None
         self._forward_layers = None
         self._backprop_layers = None
         self._max_pool_switches = None
@@ -39,7 +38,6 @@ class VisNet:
 
         self._forward_graph = tf.Graph()
         with self._forward_graph.as_default():
-            #self._load_weights()
             self._build_forward_graph()
 
         self._backprop_graph = None
@@ -88,93 +86,21 @@ class VisNet:
         block_name,
         input_features,
         max_pool_switches,
-        #tf_session,
+        method='deconv',
     ):
         i_block = int(block_name[-1])
         subconfig = self._configuration[:i_block]
-        #layer_name = 'pool'
-        #block_layer_name = block_name + '_' + layer_name
-        #num_features = len(input_features)
 
         self._backprop_graph = tf.Graph()
         with self._backprop_graph.as_default():
-            #self._load_weights()
-
-#            recons = None
-#            for block_name, block_conf in reversed(subconfig):
-#                # TODO: check features sizes.
-#                for layer_name, layer_conf in reversed(block_conf):
-#                    if 'pool' in layer_name: 
-#                        block_layer_name = block_name + '_' + layer_name
-#                        switches = tf.constant(
-#                            max_pool_switches[block_layer_name]
-#                        )
-#                        b, h, w, c = switches.shape.as_list()
-#
-#                        if recons is None:
-#                            features = [
-#                                (i_f, tf.constant(a_feature_array))
-#                                for i_f, a_feature_array
-#                                in input_features
-#                            ]
-#                            # XXX: Incompatible if the input size 
-#                            # of the pooling is not a proper multiple 
-#                            # (multiple of 32 for VGG16).
-#                            recons = [
-#                                tf.scatter_nd(
-#                                    tf.reshape(switches[0, :, :, i_f], [-1, 1]),
-#                                    tf.reshape(a_feature[:, :], [-1]),
-#                                    [b * (2 * h) * (2 * w) * c],
-#                                ) for i_f, a_feature in features 
-#                            ]
-#
-#                            recons = tf.concat(recons, axis=0)
-#                            recons = tf.reshape(
-#                                recons,
-#                                [num_features, (2 * h), (2 * w), c],
-#                            )
-#                        else:
-#                            # XXX: Assume b = 1, k = 2, s = 2.
-#                            unpooled_flattened_tensors = [
-#                                tf.scatter_nd(
-#                                    tf.reshape(switches, [-1, 1]),
-#                                    tf.reshape(recons[i_f, :, :, :], [-1]),
-#                                    [b * (2 * h) * (2 * w) * c],
-#                                )
-#                                for i_f in range(num_features)
-#                            ]
-#                            unpooled_flattened = tf.concat(
-#                                unpooled_flattened_tensors,
-#                                axis=0,
-#                            )
-#                            recons = tf.reshape(
-#                                unpooled_flattened,
-#                                [num_features, (2 * h), (2 * w), c],
-#                            )
-#
-#                    elif 'conv' in layer_name:
-#                        # XXX: Where to put ReLU?
-#                        recons = tf.nn.relu(recons)
-#                        _, _, n_in_chs, n_out_chs = layer_conf['W']
-#                        with tf.variable_scope(block_name, reuse=True):
-#                            with tf.variable_scope(layer_name, reuse=True):
-#                                W = tf.get_variable('W')
-#                                b = tf.get_variable('b')
-#                        recons = tf.nn.bias_add(recons, -b)
-#                        recons = tf.nn.conv2d_transpose(
-#                            recons,
-#                            W,
-#                            output_shape=(
-#                                recons.shape.as_list()[:-1] + [n_in_chs]
-#                            ),
-#                            strides=[1, 1, 1, 1],
-#                            padding='SAME',
-#                        )
-            recons = self._build_backprop_graph(
-                subconfig,
-                input_features,
-                max_pool_switches,
-            )
+            if method == 'deconv':
+                recons = self._build_deconv_backprop_graph(
+                    subconfig,
+                    input_features,
+                    max_pool_switches,
+                )
+            else:
+                raise NotImplementedError
 
             init = tf.global_variables_initializer()
 
@@ -241,27 +167,6 @@ class VisNet:
         block_layer_name = output_block_name + '_' + output_layer_name
         return self._forward_layers[block_layer_name]
 
-#    def _load_weights(self):
-#        for block_name, block_conf in self._configuration:
-#            for layer_name, layer_conf in block_conf:
-#                block_layer_name = block_name + '_' + layer_name
-#                if 'conv' in layer_name:
-#                    for var_name, var_shape in layer_conf.items():
-#                        dset_name = (block_layer_name + '_' +
-#                                     var_name + '_1:0')
-#                        with tf.variable_scope(block_name):
-#                            with tf.variable_scope(layer_name):
-#                                tf.get_variable(
-#                                    var_name,
-#                                    shape=var_shape,
-#                                    initializer=tf.constant_initializer(
-#                                        self.weights_f
-#                                        [block_layer_name]
-#                                        [dset_name]
-#                                        .value
-#                                    )
-#                                )
-
     def _get_weights(self, block_layer_name, var_name, var_shape):
         dset_name = block_layer_name + '_' + var_name + '_1:0'
         return tf.get_variable(
@@ -302,24 +207,8 @@ class VisNet:
                     with tf.variable_scope(layer_name):
                         block_layer_name = block_name + '_' + layer_name
                         if 'conv' in layer_name:
-#                            with tf.variable_scope(block_name, reuse=True):
-#                                with tf.variable_scope(layer_name, reuse=True):
-#                                    W = tf.get_variable('W')
-#                                    b = tf.get_variable('b')
                             conv_var = {}
                             for var_name, var_shape in layer_conf.items():
-#                                dset_name = (block_layer_name + '_' +
-#                                             var_name + '_1:0')
-#                                conv_var[var_name] = tf.get_variable(
-#                                    var_name,
-#                                    shape=var_shape,
-#                                    initializer=tf.constant_initializer(
-#                                        self.weights_f
-#                                        [block_layer_name]
-#                                        [dset_name]
-#                                        .value
-#                                    )
-#                                )
                                 conv_var[var_name] = self._get_weights(
                                     block_layer_name,
                                     var_name,
@@ -376,15 +265,6 @@ class VisNet:
                                 ('W', (input_dim, output_dim)),
                                 ('b', (output_dim)),
                             ):
-#                                dset_name = (layer_name + '_' +
-#                                             var_name + '_1:0')
-#                                layer_var[var_name] = tf.get_variable(
-#                                    var_name,
-#                                    shape=var_shape,
-#                                    initializer=tf.constant_initializer(
-#                                        weights_f[layer_name][dset_name].value
-#                                    )
-#                                )
                                 layer_var[var_name] = self._get_weights(
                                     layer_name,
                                     var_name,
@@ -409,7 +289,7 @@ class VisNet:
                         self._forward_layers[block_layer_name] = new_layer
                         prev_layer = new_layer
 
-    def _build_backprop_graph(
+    def _build_deconv_backprop_graph(
         self,
         subconfig,
         input_features,
@@ -541,87 +421,4 @@ class VisNet:
             fetches,
             feed_dict={self.layers['input']: input_array},
         )
-
-    def _get_deconved_features(
-        self,
-        features,
-        subconfig,
-        tops,
-        num_top_features=9,
-    ):
-        # XXX: Assume f_b = 1.
-        #f_b, f_h, f_w, n_features = features.shape.as_list()
-        
-        recons = None
-
-        for block_name, block_conf in reversed(subconfig):
-            # TODO: check features sizes.
-            for layer_name, layer_conf in reversed(block_conf):
-                if 'pool' in layer_name: 
-                    block_layer_name = block_name + '_' + layer_name
-                    switches = self._max_pool_switches[block_layer_name]
-                    b, h, w, c = switches.shape.as_list()
-
-                    if recons is None:
-                        # XXX: Incompatible if the input size of the pooling
-                        # is not a proper multiple (multiple of 32 for VGG16).
-                        recons = [
-                            tf.scatter_nd(
-                                tf.reshape(switches[:, :, :, tops[i]], [-1, 1]),
-                                tf.reshape(features[:, :, :, tops[i]], [-1]),
-                                [b * (2 * h) * (2 * w) * c],
-                            ) for i in range(num_top_features) 
-                        ]
-
-                        recons = tf.concat(recons, axis=0)
-                        recons = tf.reshape(
-                            recons,
-                            [num_top_features, (2 * h), (2 * w), c],
-                        )
-                    else:
-                        # XXX: Assume b = 1, k = 2, s = 2.
-                        unpooled_flattened_tensors = [
-                            tf.scatter_nd(
-                                tf.reshape(switches, [-1, 1]),
-                                tf.reshape(recons[i_f, :, :, :], [-1]),
-                                [b * (2 * h) * (2 * w) * c],
-                            )
-                            for i_f in range(num_top_features)
-                        ]
-                        unpooled_flattened = tf.concat(
-                            unpooled_flattened_tensors,
-                            axis=0,
-                        )
-                        recons = tf.reshape(
-                            unpooled_flattened,
-                            [num_top_features, (2 * h), (2 * w), c],
-                        )
-
-                elif 'conv' in layer_name:
-                    # XXX: Where to put ReLU?
-                    recons = tf.nn.relu(recons)
-                    _, _, n_in_chs, n_out_chs = layer_conf['W']
-                    with tf.variable_scope(block_name, reuse=True):
-                        with tf.variable_scope(layer_name, reuse=True):
-                            W = tf.get_variable('W')
-                            b = tf.get_variable('b')
-                    recons = tf.nn.bias_add(recons, -b)
-                    recons = tf.nn.conv2d_transpose(
-                        recons,
-                        W,
-                        output_shape=recons.shape.as_list()[:-1] + [n_in_chs],
-                        strides=[1, 1, 1, 1],
-                        padding='SAME',
-                    )
-
-                # XXX: Rescale the reconstructions to prevent overflow.
-                #recons = recons / tf.reduce_max(recons)
-                #self.recons.append(recons)
-
-        return recons
-             
-
-    def get_logits(self):
-        pass
-
 
