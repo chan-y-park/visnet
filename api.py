@@ -3,7 +3,7 @@ import random
 import numpy as np
 import tensorflow as tf
 
-from vgg16 import VGG16Core, VGG16
+#from vgg16 import VGG16Core, VGG16
 from PIL import Image
 
 ROOT_DIR = '/home/chan/workspace/visnet'
