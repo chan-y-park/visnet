@@ -93,6 +93,7 @@ class InputImage:
 def get_all_deconv_results(
     image_path,
     model_name='VGG16',
+    full_deconv=True,
     **kwargs
 ):
     if model_name == 'VGG16':
@@ -103,20 +104,24 @@ def get_all_deconv_results(
     input_image = InputImage(image_path)
     resized_image = input_image.get_resized_image(224)
     input_array = resized_image.to_array().reshape([-1, 224, 224, 3])
-    vn = VisNet(**kwargs)
-    print('Doing forward propagation and recording max pool switches...')
-    rd = vn.get_forward_results(input_array)
-    for block_name, block_conf in config['network']:
-        for layer_name, layer_conf in block_conf:
-            if layer_name != 'pool':
-                continue
-            block_layer_name = block_name + '_' + layer_name
-            print('Deconvolutioning {}...'.format(block_layer_name))
-            rv, labels = vn.get_deconv_result(block_name, layer_name)
-            rd[block_layer_name] = {
-                'recons': rv,
-                'labels': labels,
-            }
+    vn = VisNet(full_deconv=full_deconv, **kwargs)
+    if full_deconv:
+        print('Doing full deconvolution...')
+        rd = vn.get_full_deconv_result(input_array) 
+    else:
+        print('Doing forward propagation and recording max pool switches...')
+        rd = vn.get_forward_results(input_array)
+        for block_name, block_conf in config['network']:
+            for layer_name, layer_conf in block_conf:
+                if layer_name != 'pool':
+                    continue
+                block_layer_name = block_name + '_' + layer_name
+                print('Deconvolutioning {}...'.format(block_layer_name))
+                rv, labels = vn.get_deconv_result(block_name, layer_name)
+                rd[block_layer_name] = {
+                    'recons': rv,
+                    'labels': labels,
+                }
 
     return rd
 
