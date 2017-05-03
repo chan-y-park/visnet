@@ -12,12 +12,14 @@ class _weights:
 class VisNet:
     def __init__(
         self,
+        config=vgg16_no_fc_config,
         num_input_channels=3,
         input_size=224,
         batch_size=1,
         visualize=True,
         use_test_filters=False,
         logdir=None,
+        use_cpu=False,
     ):
         #XXX The following does not work, implement a similar check.
         self.num_in_chs = num_input_channels
@@ -26,14 +28,14 @@ class VisNet:
         self.visualize = visualize
         self.logdir = logdir
 
-        self._config = vgg16_no_fc_config
+        self._config = config
 
         self._num_top_features = 9
 
         self._tensor_value = None
     
         self._forward_layers = None
-        self._deconv_layers = None
+        self._deconv_tensor = None
         self._max_pool_switches = None
 
         if use_test_filters:
@@ -49,11 +51,28 @@ class VisNet:
             with tf.variable_scope('forward_network'):
                 self._build_forward_network()
             with tf.variable_scope('deconv_network'):
-                self._build_deconv_network()
+                if use_cpu:
+                    device = '/cpu:0'
+                else:
+                    device = None
+                with tf.device(device):
+                    # NOTE: tf.max_pool_with_argmax
+                    # does not have a CPU kernel, so
+                    # the forward graph cannot be
+                    # placed on CPU.
+                    self._build_deconv_network()
+
+        if self.logdir is not None:
+            self._summary_writer = tf.summary.FileWriter(
+                logdir=self.logdir,
+                graph=self._tf_graph,
+            )
+        else:
+            self._summary_writer = None
 
     def get_output(self, tf_session, input_array):
         t_output = self._get_output_layer()
-        with self._forward_graph.as_default():
+        with self._tf_graph.as_default():
             init = tf.global_variables_initializer()
             tf_session = tf.Session()
             tf_session.run(init)
@@ -63,13 +82,16 @@ class VisNet:
                 feed_dict={self._forward_layers['input']: input_array},
             )
 
-    def get_forward_results(self, input_array, use_cpu=False):
+    def get_forward_results(
+        self,
+        input_array,
+        log_device_placement=False,
+    ):
         with self._tf_graph.as_default():
 
-            if use_cpu:
-                config = tf.ConfigProto(device_count={'GPU': 0})
-            else:
-                config = tf.ConfigProto()
+            config = tf.ConfigProto(
+                log_device_placement=log_device_placement,
+            )
             tf_session = tf.Session(config=config)
 
             init = tf.global_variables_initializer()
@@ -88,11 +110,6 @@ class VisNet:
                 feed_dict={self._forward_layers['input']: input_array},
             )
 
-        if self.logdir is not None:
-            summary_writer = tf.summary.FileWriter(
-                logdir=self.logdir,
-                graph=self._forward_graph,
-            )
         self._tensor_value = rd
         return rd
 
@@ -100,7 +117,7 @@ class VisNet:
         self,
         block_name,
         layer_name,
-        use_cpu=False,
+        log_device_placement=False,
     ):
         if self._tensor_value is None:
             raise RuntimeError(
@@ -127,30 +144,50 @@ class VisNet:
 
         with self._tf_graph.as_default():
     
-            if use_cpu:
-                config = tf.ConfigProto(device_count={'GPU': 0})
-            else:
-                config = tf.ConfigProto()
+            config = tf.ConfigProto(
+                log_device_placement=log_device_placement,
+            )
             tf_session = tf.Session(config=config)
 
             init = tf.global_variables_initializer()
             tf_session.run(init)
 
-            feed_dict = {self._deconv_layers[input_name]: input_features}
+            feed_dict = {self._deconv_tensor[input_name]: input_features}
             for name, tensor in self._max_pool_switches.items():
                 feed_dict[tensor] = self._tensor_value['switches'][name]
+#                switches = self._deconv_tensor[name + '_switches']
+#                feed_dict[switches] = self._tensor_value['switches'][name]
 
             rv = tf_session.run(
-                self._deconv_layers['output'],
+                self._deconv_tensor['output'],
                 feed_dict=feed_dict,
             )
+        with self._tf_graph.as_default():
+    
+            if use_cpu:
+                config = tf.ConfigProto(
+                    device_count={'GPU': 0},
+                    log_device_placement=log_device_placement,
+                )
+            else:
+                config = tf.ConfigProto(
+                    log_device_placement=log_device_placement,
+                )
+            tf_session = tf.Session(config=config)
 
-        if self.logdir is not None:
-            summary_writer = tf.summary.FileWriter(
-                logdir=self.logdir,
-                graph=self._backprop_graph,
+            init = tf.global_variables_initializer()
+            tf_session.run(init)
+
+            feed_dict = {self._deconv_tensor[input_name]: input_features}
+            for name, tensor in self._max_pool_switches.items():
+                feed_dict[tensor] = self._tensor_value['switches'][name]
+#                switches = self._deconv_tensor[name + '_switches']
+#                feed_dict[switches] = self._tensor_value['switches'][name]
+
+            rv = tf_session.run(
+                self._deconv_tensor['output'],
+                feed_dict=feed_dict,
             )
-
         return rv
 
     def _get_test_filters(self, a_filter='one'):
@@ -328,27 +365,38 @@ class VisNet:
         # TODO: check features sizes.
         num_features = self._num_top_features 
         max_pool_switches = self._max_pool_switches
+        self._deconv_tensor = {}
+
+#        for name, tensor in self._max_pool_switches.items():
+#            switches_name = name + '_switches'
+#            self._deconv_tensor[switches_name] = tf.placeholder(
+#                tf.int64,
+#                shape=tensor.shape,
+#                name=switches_name,
+#            )
 
         output_layer = self._get_output_layer()
         b, h, w, c = output_layer.shape.as_list()
         recons = tf.placeholder(
             tf.float32,
             shape=(num_features, h, w, c),
-            name='output',
+            name='forward_output',
         )
 
-        self._deconv_layers = {}
 
         for block_name, block_conf in reversed(self._config['network']):
             with tf.variable_scope(block_name):
                 for layer_name, layer_conf in reversed(block_conf):
                     block_layer_name = block_name + '_' + layer_name
 
-                    self._deconv_layers[block_layer_name + '_input'] = recons
+                    self._deconv_tensor[block_layer_name + '_input'] = recons
 
                     with tf.variable_scope(layer_name):
                         if 'pool' in layer_name: 
                             switches = max_pool_switches[block_layer_name]
+#                            switches = self._deconv_tensor[
+#                                block_layer_name + '_switches'
+#                            ]
                             b, h, w, c = switches.shape.as_list()
 
                             # XXX: Assume b = 1, k = 2, s = 2.
@@ -395,7 +443,7 @@ class VisNet:
                                 padding='SAME',
                             )
 
-        self._deconv_layers['output'] = recons
+        self._deconv_tensor['output'] = recons
 
 #    def get_backprop_result(
 #        self,

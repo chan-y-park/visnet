@@ -2,9 +2,10 @@ import random
 
 import numpy as np
 import tensorflow as tf
-
-#from vgg16 import VGG16Core, VGG16
 from PIL import Image
+
+from vgg16 import vgg16_no_fc_config
+from visnet import VisNet
 
 ROOT_DIR = '/home/chan/workspace/visnet'
 
@@ -88,6 +89,31 @@ class InputImage:
 
         return InputImage(image=img)
 
+
+def get_all_deconv_results(
+    image_path,
+    model_name='VGG16',
+    **kwargs
+):
+    if model_name == 'VGG16':
+        config = vgg16_no_fc_config
+    else:
+        raise RuntimeError('Unknown model: {}'.format(model_name))
+
+    input_image = InputImage(image_path)
+    resize_image = input_image.get_resized_image(224)
+    input_array = resized_image.to_array().reshape([-1, 224, 224, 3])
+    vn = VisNet(**kwargs)
+    print('Doing forward propagation and recording max pool switches...')
+    rd = vn.get_forward_results(input_array)
+    for block_name, block_conf in config['network']:
+        for layer_name, layer_conf in block_conf:
+            block_layer_name = block_name + '_' + layer_name
+            deconv_name = block_layer_name + '_deconv'
+            print('Deconvolutioning {}...'.format(block_layer_name))
+            rd[deconv_name] = vn.get_deconv_result(block_name, layer_name)
+
+    return rd
 
 def run(
     input_array=None,
