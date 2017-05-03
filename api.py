@@ -101,17 +101,22 @@ def get_all_deconv_results(
         raise RuntimeError('Unknown model: {}'.format(model_name))
 
     input_image = InputImage(image_path)
-    resize_image = input_image.get_resized_image(224)
+    resized_image = input_image.get_resized_image(224)
     input_array = resized_image.to_array().reshape([-1, 224, 224, 3])
     vn = VisNet(**kwargs)
     print('Doing forward propagation and recording max pool switches...')
     rd = vn.get_forward_results(input_array)
     for block_name, block_conf in config['network']:
         for layer_name, layer_conf in block_conf:
+            if layer_name != 'pool':
+                continue
             block_layer_name = block_name + '_' + layer_name
-            deconv_name = block_layer_name + '_deconv'
             print('Deconvolutioning {}...'.format(block_layer_name))
-            rd[deconv_name] = vn.get_deconv_result(block_name, layer_name)
+            rv, labels = vn.get_deconv_result(block_name, layer_name)
+            rd[block_layer_name] = {
+                'recons': rv,
+                'labels': labels,
+            }
 
     return rd
 

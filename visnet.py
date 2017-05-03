@@ -20,6 +20,7 @@ class VisNet:
         use_test_filters=False,
         logdir=None,
         use_cpu=False,
+        full_deconv=True,
     ):
         #XXX The following does not work, implement a similar check.
         self.num_in_chs = num_input_channels
@@ -51,16 +52,19 @@ class VisNet:
             with tf.variable_scope('forward_network'):
                 self._build_forward_network()
             with tf.variable_scope('deconv_network'):
-                if use_cpu:
-                    device = '/cpu:0'
+                if full_deconv:
+                    self._build_full_deconv_network()
                 else:
-                    device = None
-                with tf.device(device):
-                    # NOTE: tf.max_pool_with_argmax
-                    # does not have a CPU kernel, so
-                    # the forward graph cannot be
-                    # placed on CPU.
-                    self._build_deconv_network()
+                    if use_cpu:
+                        device = '/cpu:0'
+                    else:
+                        device = None
+                    with tf.device(device):
+                        # NOTE: tf.max_pool_with_argmax
+                        # does not have a CPU kernel, so
+                        # the forward graph cannot be
+                        # placed on CPU.
+                        self._build_deconv_network()
 
         if self.logdir is not None:
             self._summary_writer = tf.summary.FileWriter(
@@ -137,7 +141,7 @@ class VisNet:
         
         i_top_f = np.argsort(
             np.linalg.norm(all_features, axis=(0, 1))
-        )[-self._num_top_features:]
+        )[-self._num_top_features:][::-1]
 
         for j in range(self._num_top_features):
             input_features[j,:,:,i_top_f[j]] = all_features[:,:,i_top_f[j]]
@@ -162,33 +166,43 @@ class VisNet:
                 self._deconv_tensor['output'],
                 feed_dict=feed_dict,
             )
+
+        return rv, i_top_f
+
+    def get_full_deconv_result(
+        self,
+        input_array,
+        log_device_placement=False,
+    ):
+
         with self._tf_graph.as_default():
     
-            if use_cpu:
-                config = tf.ConfigProto(
-                    device_count={'GPU': 0},
-                    log_device_placement=log_device_placement,
-                )
-            else:
-                config = tf.ConfigProto(
-                    log_device_placement=log_device_placement,
-                )
+            config = tf.ConfigProto(
+                log_device_placement=log_device_placement,
+            )
             tf_session = tf.Session(config=config)
 
             init = tf.global_variables_initializer()
             tf_session.run(init)
 
-            feed_dict = {self._deconv_tensor[input_name]: input_features}
-            for name, tensor in self._max_pool_switches.items():
-                feed_dict[tensor] = self._tensor_value['switches'][name]
-#                switches = self._deconv_tensor[name + '_switches']
-#                feed_dict[switches] = self._tensor_value['switches'][name]
-
-            rv = tf_session.run(
-                self._deconv_tensor['output'],
-                feed_dict=feed_dict,
+            full_recons, full_labels = tf_session.run(
+                [self._deconv_tensor['full_recons'],
+                 self._deconv_tensor['full_labels']],
+                feed_dict={self._forward_layers['input']: input_array},
             )
-        return rv
+
+        rd = {}
+        i_b = 0
+        for block_name, _ in self._config['network']:
+            block_layer_name = block_name + '_pool'
+            stop = i_b + self._num_top_features
+            rd[block_layer_name] = {
+                'recons': full_recons[i_b:stop, :, :, :],
+                'labels': full_labels[i_b:stop],
+            }
+            i_b = stop
+        return rd
+                
 
     def _get_test_filters(self, a_filter='one'):
         """
@@ -444,6 +458,113 @@ class VisNet:
                             )
 
         self._deconv_tensor['output'] = recons
+
+    def _build_full_deconv_network(self):
+        num_features = self._num_top_features 
+        max_pool_switches = self._max_pool_switches
+        self._deconv_tensor = {}
+        recons = None
+        labels = None
+
+        for block_name, block_conf in reversed(self._config['network']):
+            with tf.variable_scope(block_name):
+                for layer_name, layer_conf in reversed(block_conf):
+                    block_layer_name = block_name + '_' + layer_name
+                    with tf.variable_scope(layer_name):
+                        if 'pool' in layer_name: 
+                            switches = max_pool_switches[block_layer_name]
+                            b, h, w, c = switches.shape.as_list()
+
+                            # Extract the top features
+                            # from the pool layer output
+                            # of the forward network.
+                            block_fwd_output = self._forward_layers[
+                                block_layer_name
+                            ][0]
+                            _, i_top_fs = tf.nn.top_k(
+                                tf.norm(block_fwd_output, axis=(0, 1)),
+                                k=num_features,
+                            )
+                            if labels is None:
+                                labels = i_top_fs
+                            else:
+                                labels = tf.concat([i_top_fs, labels], axis=0)
+                            # XXX: Incompatible if the input size 
+                            # of the pooling is not a proper multiple 
+                            # (multiple of 32 for VGG16).
+                            new_recons = [
+                                tf.scatter_nd(
+                                    tf.reshape(
+                                        switches[0, :, :, i_top_fs[j]],
+                                        [-1, 1],
+                                    ),
+                                    tf.reshape(
+                                        block_fwd_output[:, :, i_top_fs[j]],
+                                        [-1]
+                                    ),
+                                    [b * (2 * h) * (2 * w) * c],
+                                ) for j in range(num_features) 
+                            ]
+
+#                            new_recons = tf.concat(new_recons, axis=0)
+#                            new_recons = tf.reshape(
+#                                new_recons,
+#                                [num_features, (2 * h), (2 * w), c],
+#                            )
+
+                            # Concatenate new reconstructions with
+                            # reconstructions from the above layer.
+
+                            # XXX: Assume b = 1, k = 2, s = 2.
+                            if recons is None:
+                                unpooled_flattened_tensors = new_recons
+                            else:
+                                unpooled_flattened_tensors = new_recons + [
+                                    tf.scatter_nd(
+                                        tf.reshape(switches, [-1, 1]),
+                                        tf.reshape(recons[j, :, :, :], [-1]),
+                                        [b * (2 * h) * (2 * w) * c],
+                                    )
+                                    for j in range(recons.shape[0].value)
+                                ]
+
+                            unpooled_flattened = tf.concat(
+                                unpooled_flattened_tensors,
+                                axis=0,
+                            )
+                            recons = tf.reshape(
+                                unpooled_flattened,
+                                [-1, (2 * h), (2 * w), c],
+                            )
+
+                        elif 'conv' in layer_name:
+                            # XXX: Where to put ReLU?
+                            recons = tf.nn.relu(recons)
+                            W_shape = layer_conf['W']
+                            _, _, n_in_chs, n_out_chs = W_shape
+                            W = self._get_weights(
+                                block_layer_name,
+                                'W',
+                                W_shape,
+                            )
+                            b = self._get_weights(
+                                block_layer_name,
+                                'b',
+                                layer_conf['b'],
+                            )
+                            recons = tf.nn.bias_add(recons, -b)
+                            recons = tf.nn.conv2d_transpose(
+                                recons,
+                                W,
+                                output_shape=(
+                                    recons.shape.as_list()[:-1] + [n_in_chs]
+                                ),
+                                strides=[1, 1, 1, 1],
+                                padding='SAME',
+                            )
+
+        self._deconv_tensor['full_recons'] = recons
+        self._deconv_tensor['full_labels'] = labels
 
 #    def get_backprop_result(
 #        self,
