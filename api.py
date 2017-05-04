@@ -19,7 +19,7 @@ class InputImage:
             self.image = image
 
     def to_array(self, np_dtype=np.float32):
-        x = np.asarray(self.image, dtype=np_dtype)
+        x = np.array(self.image, dtype=np_dtype)
         x = x.reshape((1,) + x.shape)
         if len(x.shape) == 2:
             raise NotImplementedError
@@ -183,8 +183,7 @@ def get_all_deconv_results(
 
 def get_deconv_images(
     input_image,
-    save_fp=None,
-    file_format='svg',
+    save_path=None,
     num_top_features=None,
     deconv_layers=None,
     axw=3,
@@ -239,4 +238,4 @@ def get_deconv_images(
         w_pad=0,
         h_pad=0,
     )                
-    plt.savefig(save_fp, format=file_format)
+    plt.savefig(save_path)

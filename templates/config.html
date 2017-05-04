@@ -17,6 +17,9 @@
                     <input type="radio" name="model" id="model_radio" value="vgg16">VGG19
                 </label>
             </div>
+{% if image_id %}
+            <input type="hidden" name="image_id" value="{{ image_id }}">
+{% endif %}
         </div>
     </form>
 
@@ -35,8 +38,8 @@
         </div>
     </form>
     <br/>
-{% if show_input_image == 'True' %}
-    <img src="{{ url_for('input_image') }}">
+{% if image_id %}
+    <img src="{{ url_for('input_image', image_id=image_id) }}">
 {% else %}
     No Image
 {% endif %}

@@ -1,17 +1,23 @@
 import time
+import uuid
 import flask
+import PIL
 from io import BytesIO
 
+from api import InputImage
+from api import get_all_deconv_results
+from api import get_deconv_images
 
 class VisNetWebApp(flask.Flask):
     def __init__(self):
         super().__init__('VisNet')
-        self._input_image = None 
 
     def load_image_from_flask(self, file_storage):
-        self._input_image = BytesIO()
-        file_storage.save(self._input_image)
-        self._input_image.seek(0)
+        image_id = str(uuid.uuid4())
+        # TODO: Check image type.
+        with open('deconv_results/{}.jpg'.format(image_id), 'wb') as fp:
+            file_storage.save(fp)
+        return image_id
 
 
 def get_web_app():
@@ -27,7 +33,11 @@ def get_web_app():
         '/config', 'config', config, methods=['GET', 'POST'],
     )
     web_app.add_url_rule(
-        '/input_image', 'input_image', input_image, methods=['GET'],
+        '/input_image/<image_id>', 'input_image', input_image, methods=['GET'],
+    )
+    web_app.add_url_rule(
+        '/deconv_image/<image_id>', 'deconv_image', deconv_image,
+        methods=['GET'],
     )
     web_app.add_url_rule(
         '/results', 'show_results', show_results, methods=['POST'],
@@ -51,26 +61,48 @@ def config():
             pass
 
     if image_file is not None and image_file.filename != '':
-        app.load_image_from_flask(image_file) 
-        show_input_image = True
+        image_id = app.load_image_from_flask(image_file) 
+        return flask.render_template(
+            'config.html',
+            image_id=image_id,
+        )
     else:
         # TODO: Load a default image file.
-        show_input_image = False
-
-    return flask.render_template(
-        'config.html',
-        show_input_image=str(show_input_image),
-    )
+        return flask.render_template('config.html')
 
 
 def show_results():
-    pass
+    image_id = flask.request.form['image_id']
+    num_top_features=3
+    input_image_path = get_image_path(image_id, 'jpg')
+    input_image = InputImage(input_image_path)
+    input_image = input_image.get_resized_image(224)
+    input_image.image.save(input_image_path)
 
-def input_image():
-    input_image = flask.current_app._input_image
-    if input_image is not None:
+    rd = get_all_deconv_results(
+        input_image,
+        log_device_placement=False,
+        num_top_features=num_top_features,
+        use_cpu=False,
+        full_deconv=True,
+    ) 
+
+    get_deconv_images(
+        input_image,
+        save_path=get_image_path(image_id, 'svg'),
+        num_top_features=num_top_features,
+        deconv_layers=rd['deconv_layers'],
+    )
+    
+    return flask.render_template(
+        'deconv_result.html',
+        image_id=image_id,
+    )
+
+def input_image(image_id):
+    try:
         rv = flask.send_file(
-            input_image,
+            get_image_path(image_id, 'jpg'),
             mimetype='image/jpg',
             cache_timeout=0,
             as_attachment=False,
@@ -78,3 +110,26 @@ def input_image():
         )
         rv.set_etag(str(time.time()))
         return rv
+    except:
+        # TODO: Check exception type & gracefully return.
+        raise RuntimeError('No input image file.')
+
+
+def deconv_image(image_id):
+    try:
+        rv = flask.send_file(
+            get_image_path(image_id, 'svg'),
+            mimetype='image/svg+xml',
+            cache_timeout=0,
+            as_attachment=False,
+            attachment_filename='deconv_image.svg',
+        )
+        rv.set_etag(str(time.time()))
+        return rv
+    except:
+        # TODO: Check exception type & gracefully return.
+        raise RuntimeError('No deconv result.')
+
+
+def get_image_path(image_id, ext='jpg'):
+    return 'deconv_results/{}.{}'.format(image_id, ext)
