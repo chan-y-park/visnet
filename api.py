@@ -2,6 +2,8 @@ import random
 
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
+
 from PIL import Image
 
 from vgg16 import vgg16_no_fc_config
@@ -135,10 +137,11 @@ def postprocess(
 
 
 def get_all_deconv_results(
-    image_path,
+    input_image,
     model_name='VGG16',
     full_deconv=True,
     by_block=True,
+    log_device_placement=False,
     **kwargs
 ):
     if model_name == 'VGG16':
@@ -146,86 +149,94 @@ def get_all_deconv_results(
     else:
         raise RuntimeError('Unknown model: {}'.format(model_name))
 
-    input_image = InputImage(image_path)
-    resized_image = input_image.get_resized_image(224)
-    input_array = resized_image.to_array().reshape([-1, 224, 224, 3])
+    input_array = input_image.to_array().reshape([-1, 224, 224, 3])
     vn = VisNet(full_deconv=full_deconv, **kwargs)
     if full_deconv:
         print('Doing full deconvolution...')
-        rd = vn.get_full_deconv_result(input_array) 
+        rd = vn.get_full_deconv_result(
+            input_array,
+            log_device_placement=log_device_placement,
+        ) 
     else:
         print('Doing forward propagation and recording max pool switches...')
-        rd = vn.get_forward_results(input_array)
+        rd = vn.get_forward_results(
+            input_array,
+            log_device_placement=log_device_placement,
+        )
+        rd['deconv_layers'] = {}
         for block_name, block_conf in config['network']:
             for layer_name, layer_conf in block_conf:
                 if by_block and layer_name != 'pool':
                     continue
                 block_layer_name = block_name + '_' + layer_name
                 print('Deconvolutioning {}...'.format(block_layer_name))
-                rv, labels = vn.get_deconv_result(block_name, layer_name)
-                rd[block_layer_name] = {
+                rv, labels = vn.get_deconv_result(
+                    block_name, layer_name,
+                    log_device_placement=log_device_placement,
+                )
+                rd['deconv_layers'][block_layer_name] = {
                     'recons': rv,
                     'labels': labels,
                 }
 
     return rd
-#
-#def run(
-#    input_array=None,
-#    input_image=None,
-#    model_name='VGG16',
-#    test=False,
-#    **kwargs
-#):
-#    if input_image is not None:
-#        input_array = input_image.to_array().reshape([-1, 224, 224, 3])
-#    if model_name == 'VGG16':
-#        #model = VGG16()
-#        model = VGG16Core(test_filters=test, **kwargs)
-#    #model.build()
-#    with model.graph.as_default():
-#        t_output = model.get_output_layer()
-#
-#        saver = tf.train.Saver(tf.global_variables())
-#        t_summary = tf.summary.merge_all()
-#
-#
-#        summary_writer = tf.summary.FileWriter(
-#            logdir=(ROOT_DIR + '/log'),
-#            graph=model.graph,
-#        )
-#
-#        init = tf.global_variables_initializer()
-#
-#        sess = tf.Session()
-#        sess.run(init)
-#
-#        fetches = {
-#            'reconstructed_features': model.reconstructed_features,
-#            'layers': model.layers,
-#            'switches': model.max_pool_switches,
-#            'tops': model.tops,
-#            'output_layer': t_output
-#        }
-#        #fetches['layers'] = model.layers
-#        #fetches['switches'] = model.max_pool_switches
-#        #fetches['tops'] = model.tops
-#        #fetches['output_layer'] = t_output
-#        #fetches['recons'] = model.recons
-#
-#        output = sess.run(
-#            fetches,
-#            feed_dict={
-#                model.input_layer: input_array,
-#            }
-#        )
-#
-#        summary_str = sess.run(t_summary)
-#        summary_writer.add_summary(summary_str)
-#
-#    return {
-#        'model': model,
-#        'output': output,
-#        'tf_session': sess,
-#    }
-#
+
+def get_deconv_images(
+    input_image,
+    save_fp=None,
+    file_format='svg',
+    num_top_features=None,
+    deconv_layers=None,
+    axw=3,
+    axh=4,
+):
+    block_layer_names = deconv_layers.keys()
+
+    nrows = len(block_layer_names)
+    ncols = num_top_features
+    w = axw * ncols * 2
+    h = axh * nrows
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        figsize=(w, h),
+    )
+
+    for i_bl, name in enumerate(block_layer_names):
+        layer = deconv_layers[name]
+        activations = layer['activations']
+        recons = layer['recons']
+        labels = layer['labels']
+        for i_f in range(num_top_features):
+            ax = axes[i_bl][i_f]
+            ax.set_xticks([])
+            ax.set_yticks([])
+            if i_f == 0:
+                ax.set_ylabel(name)
+            ax.set_title('{}'.format(labels[i_f]))
+            
+            ax.imshow(input_image.image)
+            xmin, xmax = ax.get_xlim()
+            ymin, ymax = ax.get_ylim()
+            ax.imshow(
+                postprocess(activations[i_f], flip=False),
+                cmap='gray',
+                alpha=.9,
+                extent=(xmin, xmax, ymin, ymax)
+            )
+
+            scaled = postprocess(recons[i_f])
+            ax.imshow(
+                scaled,
+                interpolation='none',
+                extent=(xmin + xmax, 2 * xmax, ymin, ymax)
+            )
+            
+            ax.set_xlim(xmin, 2*xmax)
+
+    plt.tight_layout(
+        pad=0,
+        w_pad=0,
+        h_pad=0,
+    )                
+    plt.savefig(save_fp, format=file_format)

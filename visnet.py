@@ -13,6 +13,7 @@ class VisNet:
     def __init__(
         self,
         config=vgg16_no_fc_config,
+        num_top_features=3,
         num_input_channels=3,
         input_size=224,
         batch_size=1,
@@ -31,7 +32,7 @@ class VisNet:
 
         self._config = config
 
-        self._num_top_features = 9
+        self._num_top_features = num_top_features
 
         self._tensor_value = None
     
@@ -48,27 +49,28 @@ class VisNet:
             )
 
         self._tf_graph = tf.Graph()
+
         with self._tf_graph.as_default():
-            with tf.variable_scope('forward_network'):
-                self._build_forward_network()
-            with tf.variable_scope('deconv_network'):
-                if full_deconv:
-                    self._build_full_deconv_network()
-                else:
-                    if use_cpu:
-                        device = '/cpu:0'
+            if use_cpu:
+                device = '/cpu:0'
+            else:
+                device = None
+            with tf.device(device):
+                with tf.variable_scope('forward_network'):
+                    self._build_forward_network()
+                with tf.variable_scope('deconv_network'):
+                    if full_deconv:
+                        self._build_full_deconv_network()
                     else:
-                        device = None
-                    with tf.device(device):
-                        # NOTE: tf.max_pool_with_argmax
-                        # does not have a CPU kernel, so
-                        # the forward graph cannot be
-                        # placed on CPU.
                         self._build_deconv_network()
+
             with tf.device('/gpu:0'):
-                self.bytes_in_use = tf.load_op_library(
-                    './memory_probe_ops.so'
-                ).bytes_in_use()
+                try:
+                    self._bytes_in_use = tf.load_op_library(
+                        './memory_probe_ops.so'
+                    ).bytes_in_use()
+                except NotFoundError:
+                    self._bytes_in_use = None
 
         if self.logdir is not None:
             self._summary_writer = tf.summary.FileWriter(
@@ -117,6 +119,8 @@ class VisNet:
                 fetches,
                 feed_dict={self._forward_layers['input']: input_array},
             )
+            if self._bytes_in_use is not None:
+                rd['bytes_in_use'] = tf_session.run(self._bytes_in_use)
 
         self._tensor_value = rd
         return rd
@@ -178,6 +182,11 @@ class VisNet:
         input_array,
         log_device_placement=False,
     ):
+        # TODO: Reconstruct conv layer outputs.
+        deconv_layer_names = [
+            block_name + '_pool'
+            for block_name, _ in self._config['network']
+        ]
 
         with self._tf_graph.as_default():
     
@@ -189,25 +198,28 @@ class VisNet:
             init = tf.global_variables_initializer()
             tf_session.run(init)
 
-            full_recons, full_labels = tf_session.run(
-                [self._deconv_tensor['full_recons'],
-                 self._deconv_tensor['full_labels']],
+            fetches = tf_session.run(
+                self._deconv_tensor,
                 feed_dict={self._forward_layers['input']: input_array},
             )
 
-        rd = {'bytes_in_use': tf_session.run(self.bytes_in_use)}
+        rd = {
+            'tf_session': tf_session,
+            'deconv_layers': {}
+        }
+        if self._bytes_in_use is not None:
+            rd['bytes_in_use'] = tf_session.run(self._bytes_in_use)
+
         i_b = 0
-        for block_name, _ in self._config['network']:
-            # TODO: Reconstruct conv layer outputs.
-            block_layer_name = block_name + '_pool'
+        for name in deconv_layer_names:
             stop = i_b + self._num_top_features
-            rd[block_layer_name] = {
-                'recons': full_recons[i_b:stop, :, :, :],
-                'labels': full_labels[i_b:stop],
+            rd['deconv_layers'][name] = {
+                'activations': fetches[name + '_activations'],
+                'recons': fetches['full_recons'][i_b:stop, :, :, :],
+                'labels': fetches['full_labels'][i_b:stop],
             }
             i_b = stop
         return rd
-                
 
     def _get_test_filters(self, a_filter='one'):
         """
@@ -321,19 +333,20 @@ class VisNet:
                                 tensor,
                             )
                         elif 'pool' in layer_name:
-                            rv = pool_f(
-                                prev_layer,
-                                ksize=([1] + layer_conf['k'] + [1]),
-                                strides=([1] + layer_conf['s'] + [1]),
-                                padding='SAME',
-                            )
-
+                            with tf.device('/gpu:0'):
+                                # NOTE max_pool_with_argmax does not have
+                                # a CPU kernel.
+                                rv = pool_f(
+                                    prev_layer,
+                                    ksize=([1] + layer_conf['k'] + [1]),
+                                    strides=([1] + layer_conf['s'] + [1]),
+                                    padding='SAME',
+                                )
                             if self.visualize:
                                 new_layer, switches = rv
                                 self._max_pool_switches[
                                     block_layer_name
                                 ] = switches
-
                             else:
                                 new_layer = rv
 
@@ -494,6 +507,16 @@ class VisNet:
                                 labels = i_top_fs
                             else:
                                 labels = tf.concat([i_top_fs, labels], axis=0)
+
+                            top_features = tf.stack(
+                                [block_fwd_output[:, :, i_top_fs[j]]
+                                 for j in range(num_features)],
+                                axis=0,
+                            )
+                            self._deconv_tensor[
+                                block_layer_name  + '_activations'
+                            ] = top_features 
+
                             # XXX: Incompatible if the input size 
                             # of the pooling is not a proper multiple 
                             # (multiple of 32 for VGG16).
@@ -504,18 +527,13 @@ class VisNet:
                                         [-1, 1],
                                     ),
                                     tf.reshape(
-                                        block_fwd_output[:, :, i_top_fs[j]],
+#                                        block_fwd_output[:, :, i_top_fs[j]],
+                                        top_features[j, :, :],
                                         [-1]
                                     ),
                                     [b * (2 * h) * (2 * w) * c],
                                 ) for j in range(num_features) 
                             ]
-
-#                            new_recons = tf.concat(new_recons, axis=0)
-#                            new_recons = tf.reshape(
-#                                new_recons,
-#                                [num_features, (2 * h), (2 * w), c],
-#                            )
 
                             # Concatenate new reconstructions with
                             # reconstructions from the above layer.
