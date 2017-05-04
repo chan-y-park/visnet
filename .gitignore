@@ -2,3 +2,5 @@ __pycache__/
 log/
 .ipynb_checkpoints/
 *.swp
+deconv_results/*.jpg
+deconv_results/*.svg
