@@ -90,10 +90,55 @@ class InputImage:
         return InputImage(image=img)
 
 
+def postprocess(
+    image_array,
+    per_channel=False,
+    add_mean=False,
+    flip=True,
+):
+    """
+    Rescale all RGB channels to have values between 0 and 1.
+    If per_channel is False, rescaling is done
+    by taking the minimum and the maximum over all element.
+    If per_channel is True, rescaling is done channel by channel.
+
+    If add_mean is True, add back the mean pixel values
+    that are subtracted during the preprocessing. 
+
+    If flip is True, flip the order of the color channels from BGR to RGB.
+    """
+    if per_channel:
+        num_color_chs = 3
+        scaled = []
+        for i_c in range(num_color_chs):
+            a_ch = image_array[:, :, i_c].astype(float)
+            min_v = np.min(a_ch)
+            a_ch -= min_v
+            a_ch /= np.max(a_ch)
+            scaled.append(a_ch)
+        image_array = np.array(scaled).transpose(1, 2, 0)
+    else:
+        image_array = image_array.astype(float)
+        min_v = np.min(image_array)
+        image_array -= min_v
+        image_array /= np.max(image_array)
+
+    if add_mean:
+        image_array[:, :, 0] += 103.939 / 255.0
+        image_array[:, :, 1] += 116.779 / 255.0
+        image_array[:, :, 2] += 123.68 / 255.0
+
+    if flip:
+        image_array = image_array[:,:,::-1]
+
+    return image_array
+
+
 def get_all_deconv_results(
     image_path,
     model_name='VGG16',
     full_deconv=True,
+    by_block=True,
     **kwargs
 ):
     if model_name == 'VGG16':
@@ -113,7 +158,7 @@ def get_all_deconv_results(
         rd = vn.get_forward_results(input_array)
         for block_name, block_conf in config['network']:
             for layer_name, layer_conf in block_conf:
-                if layer_name != 'pool':
+                if by_block and layer_name != 'pool':
                     continue
                 block_layer_name = block_name + '_' + layer_name
                 print('Deconvolutioning {}...'.format(block_layer_name))
@@ -124,63 +169,63 @@ def get_all_deconv_results(
                 }
 
     return rd
-
-def run(
-    input_array=None,
-    input_image=None,
-    model_name='VGG16',
-    test=False,
-    **kwargs
-):
-    if input_image is not None:
-        input_array = input_image.to_array().reshape([-1, 224, 224, 3])
-    if model_name == 'VGG16':
-        #model = VGG16()
-        model = VGG16Core(test_filters=test, **kwargs)
-    #model.build()
-    with model.graph.as_default():
-        t_output = model.get_output_layer()
-
-        saver = tf.train.Saver(tf.global_variables())
-        t_summary = tf.summary.merge_all()
-
-
-        summary_writer = tf.summary.FileWriter(
-            logdir=(ROOT_DIR + '/log'),
-            graph=model.graph,
-        )
-
-        init = tf.global_variables_initializer()
-
-        sess = tf.Session()
-        sess.run(init)
-
-        fetches = {
-            'reconstructed_features': model.reconstructed_features,
-            'layers': model.layers,
-            'switches': model.max_pool_switches,
-            'tops': model.tops,
-            'output_layer': t_output
-        }
-        #fetches['layers'] = model.layers
-        #fetches['switches'] = model.max_pool_switches
-        #fetches['tops'] = model.tops
-        #fetches['output_layer'] = t_output
-        #fetches['recons'] = model.recons
-
-        output = sess.run(
-            fetches,
-            feed_dict={
-                model.input_layer: input_array,
-            }
-        )
-
-        summary_str = sess.run(t_summary)
-        summary_writer.add_summary(summary_str)
-
-    return {
-        'model': model,
-        'output': output,
-        'tf_session': sess,
-    }
-
+#
+#def run(
+#    input_array=None,
+#    input_image=None,
+#    model_name='VGG16',
+#    test=False,
+#    **kwargs
+#):
+#    if input_image is not None:
+#        input_array = input_image.to_array().reshape([-1, 224, 224, 3])
+#    if model_name == 'VGG16':
+#        #model = VGG16()
+#        model = VGG16Core(test_filters=test, **kwargs)
+#    #model.build()
+#    with model.graph.as_default():
+#        t_output = model.get_output_layer()
+#
+#        saver = tf.train.Saver(tf.global_variables())
+#        t_summary = tf.summary.merge_all()
+#
+#
+#        summary_writer = tf.summary.FileWriter(
+#            logdir=(ROOT_DIR + '/log'),
+#            graph=model.graph,
+#        )
+#
+#        init = tf.global_variables_initializer()
+#
+#        sess = tf.Session()
+#        sess.run(init)
+#
+#        fetches = {
+#            'reconstructed_features': model.reconstructed_features,
+#            'layers': model.layers,
+#            'switches': model.max_pool_switches,
+#            'tops': model.tops,
+#            'output_layer': t_output
+#        }
+#        #fetches['layers'] = model.layers
+#        #fetches['switches'] = model.max_pool_switches
+#        #fetches['tops'] = model.tops
+#        #fetches['output_layer'] = t_output
+#        #fetches['recons'] = model.recons
+#
+#        output = sess.run(
+#            fetches,
+#            feed_dict={
+#                model.input_layer: input_array,
+#            }
+#        )
+#
+#        summary_str = sess.run(t_summary)
+#        summary_writer.add_summary(summary_str)
+#
+#    return {
+#        'model': model,
+#        'output': output,
+#        'tf_session': sess,
+#    }
+#

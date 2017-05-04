@@ -65,6 +65,10 @@ class VisNet:
                         # the forward graph cannot be
                         # placed on CPU.
                         self._build_deconv_network()
+            with tf.device('/gpu:0'):
+                self.bytes_in_use = tf.load_op_library(
+                    './memory_probe_ops.so'
+                ).bytes_in_use()
 
         if self.logdir is not None:
             self._summary_writer = tf.summary.FileWriter(
@@ -191,9 +195,10 @@ class VisNet:
                 feed_dict={self._forward_layers['input']: input_array},
             )
 
-        rd = {}
+        rd = {'bytes_in_use': tf_session.run(self.bytes_in_use)}
         i_b = 0
         for block_name, _ in self._config['network']:
+            # TODO: Reconstruct conv layer outputs.
             block_layer_name = block_name + '_pool'
             stop = i_b + self._num_top_features
             rd[block_layer_name] = {
