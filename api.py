@@ -170,14 +170,10 @@ def get_all_deconv_results(
                     continue
                 block_layer_name = block_name + '_' + layer_name
                 print('Deconvolutioning {}...'.format(block_layer_name))
-                rv, labels = vn.get_deconv_result(
+                rd['deconv_layers'][block_layer_name] = vn.get_deconv_result(
                     block_name, layer_name,
                     log_device_placement=log_device_placement,
                 )
-                rd['deconv_layers'][block_layer_name] = {
-                    'recons': rv,
-                    'labels': labels,
-                }
 
     return rd
 

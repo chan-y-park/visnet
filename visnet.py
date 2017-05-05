@@ -145,13 +145,19 @@ class VisNet:
             (self._num_top_features, h, w, c),
             dtype=np.float32,
         )
+        activations = np.zeros(
+            (self._num_top_features, h, w),
+            dtype=np.float32,
+        )
         
         i_top_f = np.argsort(
             np.linalg.norm(all_features, axis=(0, 1))
         )[-self._num_top_features:][::-1]
 
         for j in range(self._num_top_features):
-            input_features[j,:,:,i_top_f[j]] = all_features[:,:,i_top_f[j]]
+            a_feature = all_features[:,:,i_top_f[j]]
+            input_features[j,:,:,i_top_f[j]] = a_feature
+            activations[j,:,:] = a_feature
 
         with self._tf_graph.as_default():
     
@@ -166,15 +172,19 @@ class VisNet:
             feed_dict = {self._deconv_tensor[input_name]: input_features}
             for name, tensor in self._max_pool_switches.items():
                 feed_dict[tensor] = self._tensor_value['switches'][name]
-#                switches = self._deconv_tensor[name + '_switches']
-#                feed_dict[switches] = self._tensor_value['switches'][name]
 
             rv = tf_session.run(
                 self._deconv_tensor['output'],
                 feed_dict=feed_dict,
             )
 
-        return rv, i_top_f
+            rd = {
+                'activations': activations,
+                'recons': rv,
+                'labels': i_top_f,
+            }
+
+        return rd
 
     def get_full_deconv_result(
         self,
@@ -398,14 +408,6 @@ class VisNet:
         max_pool_switches = self._max_pool_switches
         self._deconv_tensor = {}
 
-#        for name, tensor in self._max_pool_switches.items():
-#            switches_name = name + '_switches'
-#            self._deconv_tensor[switches_name] = tf.placeholder(
-#                tf.int64,
-#                shape=tensor.shape,
-#                name=switches_name,
-#            )
-
         output_layer = self._get_output_layer()
         b, h, w, c = output_layer.shape.as_list()
         recons = tf.placeholder(
@@ -425,9 +427,6 @@ class VisNet:
                     with tf.variable_scope(layer_name):
                         if 'pool' in layer_name: 
                             switches = max_pool_switches[block_layer_name]
-#                            switches = self._deconv_tensor[
-#                                block_layer_name + '_switches'
-#                            ]
                             b, h, w, c = switches.shape.as_list()
 
                             # XXX: Assume b = 1, k = 2, s = 2.
@@ -436,6 +435,10 @@ class VisNet:
                                     tf.reshape(switches, [-1, 1]),
                                     tf.reshape(recons[i_f, :, :, :], [-1]),
                                     [b * (2 * h) * (2 * w) * c],
+                                    name=(
+                                        'unpooled_flattened_{}'
+                                        .format(i_f)
+                                    ),
                                 )
                                 for i_f in range(num_features)
                             ]
@@ -446,6 +449,7 @@ class VisNet:
                             recons = tf.reshape(
                                 unpooled_flattened,
                                 [num_features, (2 * h), (2 * w), c],
+                                name='reconstruction',
                             )
 
                         elif 'conv' in layer_name:
@@ -501,16 +505,21 @@ class VisNet:
                             _, i_top_fs = tf.nn.top_k(
                                 tf.norm(block_fwd_output, axis=(0, 1)),
                                 k=num_features,
+                                name=(block_layer_name + '_top_labels')
                             )
                             if labels is None:
                                 labels = i_top_fs
                             else:
-                                labels = tf.concat([i_top_fs, labels], axis=0)
+                                labels = tf.concat(
+                                    [i_top_fs, labels], axis=0,
+                                    name='full_labels'
+                                )
 
                             top_features = tf.stack(
                                 [block_fwd_output[:, :, i_top_fs[j]]
                                  for j in range(num_features)],
                                 axis=0,
+                                name=(block_layer_name + '_top_features')
                             )
                             self._deconv_tensor[
                                 block_layer_name  + '_activations'
@@ -530,6 +539,10 @@ class VisNet:
                                         [-1]
                                     ),
                                     [b * (2 * h) * (2 * w) * c],
+                                    name=(
+                                        'new_recons_unpooled_flattened_{}'
+                                        .format(j)
+                                    ),
                                 ) for j in range(num_features) 
                             ]
 
@@ -545,6 +558,10 @@ class VisNet:
                                         tf.reshape(switches, [-1, 1]),
                                         tf.reshape(recons[j, :, :, :], [-1]),
                                         [b * (2 * h) * (2 * w) * c],
+                                        name=(
+                                            'prev_recons_unpooled_flattened_{}'
+                                            .format(j)
+                                        ),
                                     )
                                     for j in range(recons.shape[0].value)
                                 ]
@@ -556,6 +573,7 @@ class VisNet:
                             recons = tf.reshape(
                                 unpooled_flattened,
                                 [-1, (2 * h), (2 * w), c],
+                                name='reconstruction',
                             )
 
                         elif 'conv' in layer_name:
