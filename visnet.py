@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import tensorflow as tf
 import h5py
@@ -64,13 +65,14 @@ class VisNet:
                     with tf.variable_scope('deconv_network'):
                         self._build_deconv_network()
 
-            with tf.device('/gpu:0'):
-                try:
+            memory_probe_ops_path = './memory_probe_ops.so'
+            if os.path.exists(memory_probe_ops_path):
+                with tf.device('/gpu:0'):
                     self._bytes_in_use = tf.load_op_library(
-                        './memory_probe_ops.so'
+                        memory_probe_ops_path
                     ).bytes_in_use()
-                except NotFoundError:
-                    self._bytes_in_use = None
+            else:
+                self._bytes_in_use = None
 
         if self.logdir is not None:
             self._summary_writer = tf.summary.FileWriter(
