@@ -122,8 +122,13 @@ def postprocess(
     else:
         image_array = image_array.astype(float)
         min_v = np.min(image_array)
-        image_array -= min_v
-        image_array /= np.max(image_array)
+        max_v = np.max(image_array)
+        if min_v == max_v:
+            if max_v != 0:
+                image_array /= max_v
+        else:
+            image_array -= min_v
+            image_array /= (max_v - min_v)
 
     if add_mean:
         image_array[:, :, 0] += 103.939 / 255.0

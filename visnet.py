@@ -18,7 +18,7 @@ class VisNet:
         input_size=224,
         batch_size=1,
         visualize=True,
-        use_test_filters=False,
+        test_filter=None,
         logdir=None,
         use_cpu=False,
         full_deconv=True,
@@ -39,8 +39,8 @@ class VisNet:
         self._deconv_tensor = None
         self._max_pool_switches = None
 
-        if use_test_filters:
-            self.weights_f = self._get_test_filters()
+        if test_filter is not None:
+            self.weights_f = self._get_test_filters(test_filter)
         else:
             self.weights_f = h5py.File(
                 self._config['weights_file_path'],
@@ -57,10 +57,11 @@ class VisNet:
             with tf.device(device):
                 with tf.variable_scope('forward_network'):
                     self._build_forward_network()
-                with tf.variable_scope('deconv_network'):
-                    if full_deconv:
+                if full_deconv:
+                    with tf.variable_scope('full_deconv_network'):
                         self._build_full_deconv_network()
-                    else:
+                else:
+                    with tf.variable_scope('deconv_network'):
                         self._build_deconv_network()
 
             with tf.device('/gpu:0'):
@@ -230,7 +231,7 @@ class VisNet:
             i_b = stop
         return rd
 
-    def _get_test_filters(self, a_filter='one'):
+    def _get_test_filters(self, test_filter='one'):
         """
         Pack the given test filter into a dict
         according to the format of the weights hdf5 file
@@ -246,11 +247,16 @@ class VisNet:
                         dset_name = block_layer_name + '_' + var_name + '_1:0'
                         if var_name == 'W':
                             h, w, n_in, n_out = var_shape
-                            if a_filter == 'one':
+                            if test_filter == 'one':
                                 W = np.ones((h, w), dtype=np.float32)
-                            elif a_filter == 'zero':
+                            elif test_filter == 'zero':
                                 W = np.zeros((h, w), dtype=np.float32)
-                            elif a_filter == 'identity':
+                            elif test_filter == 'full':
+                                W = np.full(
+                                    (h, w), (1.0 / 9),
+                                    dtype=np.float32,
+                                )
+                            elif test_filter == 'identity':
                                 W = np.array(
                                     [[0, 0, 0],
                                      [0, 1, 0],
@@ -258,7 +264,7 @@ class VisNet:
                                     dtype=np.float32
                                 )
                             else:
-                                W = np.array(a_filter, dtype=np.float)
+                                W = np.array(test_filter, dtype=np.float)
                             var = _weights(
                                 np.array(
                                     [[W for _ in range(n_out)]
