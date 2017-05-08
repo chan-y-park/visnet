@@ -4,7 +4,10 @@ import getopt
 
 from web_api import get_web_app
 
-application = get_web_app()
+application = get_web_app(
+    use_cpu=True,
+    full_deconv=False,
+)
 
 if __name__ == '__main__':
     host = '0.0.0.0'
@@ -14,7 +17,7 @@ if __name__ == '__main__':
         if opt == '-p':
             port = int(arg)
 
-    web_app.run(
+    application.run(
         host=host,
         port=port,
         debug=True,

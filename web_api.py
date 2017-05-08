@@ -11,6 +11,7 @@ from api import get_deconv_images
 class VisNetWebApp(flask.Flask):
     def __init__(self):
         super().__init__('VisNet')
+        self.use_cpu = False
 
     def load_image_from_flask(self, file_storage):
         image_id = str(uuid.uuid4())
@@ -20,12 +21,19 @@ class VisNetWebApp(flask.Flask):
         return image_id
 
 
-def get_web_app():
+def get_web_app(
+    use_cpu=False,
+    full_deconv=True,    
+):
     web_app = VisNetWebApp()
     web_app.config.update(
         DEBUG=True,
         SECRET_KEY='visnet secret key',
     )
+
+    web_app.use_cpu = use_cpu
+    web_app.full_deconv = full_deconv
+
     web_app.add_url_rule(
         '/', 'index', index, methods=['GET'],
     )
@@ -72,6 +80,7 @@ def config():
 
 
 def show_results():
+    app = flask.current_app
     image_id = flask.request.form['image_id']
     num_top_features=3
     input_image_path = get_image_path(image_id, 'jpg')
@@ -83,8 +92,8 @@ def show_results():
         input_image,
         log_device_placement=False,
         num_top_features=num_top_features,
-        use_cpu=False,
-        full_deconv=True,
+        use_cpu=app.use_cpu,
+        full_deconv=app.full_deconv,
     ) 
 
     get_deconv_images(
