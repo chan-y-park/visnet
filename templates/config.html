@@ -26,7 +26,11 @@
     <form action="" class="form-horizontal" method="post" enctype="multipart/form-data">
         <div class="form-group">
             <div class="col-xs-3">
+{% if not image_id %}
                 <label for="image_file" class="control-label">Choose an image file to analyze.</label>
+{% else %}
+                <label class="control-label">May take up to 10 seconds to analyze.</label>
+{% endif %}
             </div>
 {% if not image_id %}
             <div class="col-xs-3">
