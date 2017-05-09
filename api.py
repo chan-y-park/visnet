@@ -1,7 +1,6 @@
 import random
 
 import numpy as np
-import tensorflow as tf
 
 import matplotlib
 matplotlib.use('Agg')
