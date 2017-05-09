@@ -15,6 +15,10 @@ Visualizing VGG16 convnet using deconvnet.
 
 Please see https://chan-y-park.github.io/blog/visualizing_convnet.html for a detailed description of this project.
 
+## Web application
+
+http://chanypark.ddns.net:8000
+
 ## Example
 
 ### Input Image
