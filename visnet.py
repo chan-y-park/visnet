@@ -23,6 +23,8 @@ class VisNet:
         logdir=None,
         use_cpu=False,
         full_deconv=True,
+        gpu_memory_fraction=None,
+        gpu_memory_allow_growth=True,
     ):
         self.num_in_chs = num_input_channels
         self.input_size = input_size
@@ -31,6 +33,13 @@ class VisNet:
         self.logdir = logdir
 
         self._config = config
+
+        self._tf_config = tf.ConfigProto()
+        self._tf_config.gpu_options.allow_growth = gpu_memory_allow_growth 
+        if gpu_memory_fraction is not None:
+            self._tf_config.gpu_options.per_process_gpu_memory_fraction = (
+                gpu_memory_fraction
+            )
 
         self._num_top_features = num_top_features
 
@@ -85,8 +94,8 @@ class VisNet:
     def get_output(self, tf_session, input_array):
         t_output = self._get_output_layer()
         with self._tf_graph.as_default():
+            tf_session = tf.Session(config=self._tf_config)
             init = tf.global_variables_initializer()
-            tf_session = tf.Session()
             tf_session.run(init)
 
             return tf_session.run(
@@ -101,10 +110,11 @@ class VisNet:
     ):
         with self._tf_graph.as_default():
 
-            config = tf.ConfigProto(
-                log_device_placement=log_device_placement,
-            )
-            tf_session = tf.Session(config=config)
+#            config = tf.ConfigProto(
+#                log_device_placement=log_device_placement,
+#            )
+            self._tf_config.log_device_placement=log_device_placement
+            tf_session = tf.Session(config=self._tf_config)
 
             init = tf.global_variables_initializer()
             tf_session.run(init)
@@ -164,10 +174,11 @@ class VisNet:
 
         with self._tf_graph.as_default():
     
-            config = tf.ConfigProto(
-                log_device_placement=log_device_placement,
-            )
-            tf_session = tf.Session(config=config)
+#            config = tf.ConfigProto(
+#                log_device_placement=log_device_placement,
+#            )
+            self._tf_config.log_device_placement=log_device_placement
+            tf_session = tf.Session(config=self._tf_config)
 
             init = tf.global_variables_initializer()
             tf_session.run(init)
@@ -202,10 +213,11 @@ class VisNet:
 
         with self._tf_graph.as_default():
     
-            config = tf.ConfigProto(
-                log_device_placement=log_device_placement,
-            )
-            tf_session = tf.Session(config=config)
+#            config = tf.ConfigProto(
+#                log_device_placement=log_device_placement,
+#            )
+            self._tf_config.log_device_placement=log_device_placement
+            tf_session = tf.Session(config=self._tf_config)
 
             init = tf.global_variables_initializer()
             tf_session.run(init)
